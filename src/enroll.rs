@@ -50,7 +50,7 @@ pub fn run(c: &Config) -> Result<()> {
         return Err(fail("capsule mapping already exists"));
     }
     let device = fido::Device::open(&unlock::device(c)?)?;
-    let pin = process::pin(path_field(c, "ask_password")?)?;
+    let pin = crate::pin::read()?;
     let manifest = device.enroll(uuid.clone(), &pin)?;
     let f = device.derive(&manifest, &pin)?;
     drop(pin);

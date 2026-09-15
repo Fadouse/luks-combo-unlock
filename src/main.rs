@@ -6,6 +6,7 @@ mod enroll;
 mod fido;
 mod linux;
 mod manifest;
+mod pin;
 mod process;
 mod secret;
 mod unlock;

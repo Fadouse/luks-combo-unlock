@@ -182,7 +182,7 @@ pub fn run(config: &Config, verify: bool) -> Result<()> {
     ).map_err(|e| fail(format!("stage=tpm-policy: {e}")))?;
     resources.secret = Some(secret::RamSecret::new()?);
     let device = crate::fido::Device::open(&key)?;
-    let pin = process::pin(path_field(config, "ask_password")?)?;
+    let pin = crate::pin::read()?;
     let f = device.derive(&manifest, &pin)?;
     drop(pin);
     drop(device);

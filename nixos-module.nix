@@ -45,6 +45,9 @@ in {
         RemainAfterExit = true;
         TimeoutStartSec = "300s";
         SyslogIdentifier = "luks";
+        StandardInput = "tty";
+        TTYPath = "/dev/console";
+        TTYReset = true;
         StandardOutput = "journal+console";
         StandardError = "journal+console";
         UMask = "0077";

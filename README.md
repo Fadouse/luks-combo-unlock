@@ -1,6 +1,6 @@
 # luks-combo-unlock
 
-Unlocks LUKS2 slot 2 with an independent TPM secret and a FIDO2 `hmac-secret` result. Each attempt verifies a fresh assertion against the enrolled public key, requiring PIN verification and touch. HKDF-SHA-256 binds both factors to the volume and credential. A measured configuration pins the enrollment manifest's SHA-256 digest.
+Unlocks LUKS2 slot 2 with an independent TPM secret and a FIDO2 `hmac-secret` result. Numeric PIN entry uses a new random digit-to-key mapping after each digit or edit, drawn only on the controlling terminal. Enter submits; Backspace erases; Ctrl-U clears; Esc cancels. Each attempt verifies a fresh assertion against the enrolled public key, requiring PIN verification and touch. HKDF-SHA-256 binds both factors to the volume and credential. A measured configuration pins the enrollment manifest's SHA-256 digest.
 
 ```sh
 nix build

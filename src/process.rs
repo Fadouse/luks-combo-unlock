@@ -230,9 +230,6 @@ mod tests {
 }
 
 // Only systemd-ask-password's bounded stdout is read into locked memory.
-pub fn pin(program: &Path) -> Result<crate::secret::Secret<64>> {
-    Ok(prompt::<64>(program, "[LUKS] Security Key PIN:")?.0)
-}
 pub fn prompt<const N: usize>(
     program: &Path,
     message: &str,
