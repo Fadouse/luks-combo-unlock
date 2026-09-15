@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
-use crate::{Result, fail, field, log, path_field, process, secure};
-use serde_json::{Value, json};
+use crate::{
+    Result,
+    common::{self as secure, Config, path_field},
+    fail, linux, log, process, secret,
+};
 use std::{
     fs::{self, OpenOptions},
     os::unix::fs::{FileTypeExt, OpenOptionsExt},
@@ -11,7 +14,7 @@ use std::{
 };
 const CAPSULE_MAP: &str = "fde-combo-salt";
 const VERIFY_MAP: &str = "cryptroot-combo-check";
-const MARKER: &str = "/run/luks-session-guard/unlocked.json";
+const MARKER: &str = "/run/luks-combo-unlock/unlocked";
 
 pub fn valid_cid(cid: &str) -> bool {
     !cid.is_empty()
@@ -23,8 +26,8 @@ pub fn valid_cid(cid: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'+' || b == b'/')
         && cid.len() - cid.trim_end_matches('=').len() <= 2
 }
-fn device(config: &Value) -> Result<PathBuf> {
-    let identity = field(config, "hid_identity")?;
+fn device(config: &Config) -> Result<PathBuf> {
+    let identity = &config["hid_identity"];
     let deadline = Instant::now() + Duration::from_secs(30);
     log("USB", "Waiting up to 30 seconds for your Security Key.");
     loop {
@@ -67,7 +70,7 @@ struct Resources<'a> {
     capsule_owned: bool,
     verify_owned: bool,
     scratch: Option<PathBuf>,
-    secret: Option<secure::RamSecret>,
+    secret: Option<secret::RamSecret>,
 }
 impl Resources<'_> {
     fn detach(&self, name: &str) -> Result<()> {
@@ -116,23 +119,23 @@ impl Drop for Resources<'_> {
     }
 }
 
-pub fn run(config: &Value, verify: bool) -> Result<()> {
+pub fn run(config: &Config, verify: bool) -> Result<()> {
     let cryptsetup = path_field(config, "cryptsetup")?;
-    let root = field(config, "root_device")?;
+    let root = config["root_device"].as_str();
     path_field(config, "root_device")?;
     let state = path_field(config, "state_dir")?;
-    secure::private_dir(Path::new("/run/luks-session-guard"))?;
+    secure::private_dir(Path::new("/run/luks-combo-unlock"))?;
     let lock = OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .truncate(false)
         .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-        .open("/run/luks-session-guard/operation.lock")?;
+        .custom_flags(linux::O_NOFOLLOW | linux::O_CLOEXEC)
+        .open("/run/luks-combo-unlock/operation.lock")?;
     use std::os::fd::AsRawFd;
     // SAFETY: the owned fd remains open for the whole unlock/verify operation.
-    if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+    if unsafe { linux::flock(lock.as_raw_fd(), linux::LOCK_EX | linux::LOCK_NB) } != 0 {
         return Err(fail("another combination operation is running"));
     }
     if !verify {
@@ -186,9 +189,8 @@ pub fn run(config: &Value, verify: bool) -> Result<()> {
             "luks,tpm2-device=auto,tpm2-pin=no,headless=yes,readonly,tries=1,password-cache=no,token-timeout=10s",
         ],
         Duration::from_secs(25),
-        true,
     ).map_err(|e| fail(format!("stage=tpm-policy: {e}")))?;
-    resources.secret = Some(secure::RamSecret::new()?);
+    resources.secret = Some(secret::RamSecret::new()?);
     let salt = resources
         .secret
         .as_ref()
@@ -198,13 +200,13 @@ pub fn run(config: &Value, verify: bool) -> Result<()> {
     resources.capsule_owned = false;
     let data_path = if verify {
         let scratch = secure::unique(Path::new("/run"), "luks-check-")?;
-        OpenOptions::new()
+        let file = OpenOptions::new()
             .write(true)
             .create_new(true)
             .mode(0o600)
-            .open(&scratch)?
-            .set_len(32 * 1024 * 1024)?;
+            .open(&scratch)?;
         resources.scratch = Some(scratch.clone());
+        file.set_len(32 * 1024 * 1024)?;
         scratch
     } else {
         PathBuf::from(root)
@@ -233,7 +235,6 @@ pub fn run(config: &Value, verify: bool) -> Result<()> {
             &options,
         ],
         Duration::from_secs(if verify { 610 } else { 100 }),
-        true,
     )?;
     resources.cleanup()?;
     if verify {
@@ -242,8 +243,8 @@ pub fn run(config: &Value, verify: bool) -> Result<()> {
             "COMBO_VERIFY_SUCCESS: TPM + Security Key PIN + touch verified.",
         );
     } else {
-        let marker = json!({"boot_id": secure::boot_id()?, "slot": 1, "device": root});
-        secure::atomic_write(Path::new(MARKER), &serde_json::to_vec(&marker)?)?;
+        let marker = format!("LUKS-COMBO-1\n{}\n{}\n1\n", secure::boot_id()?, root);
+        secure::atomic_write(Path::new(MARKER), marker.as_bytes())?;
         log("DONE", "COMBO_UNLOCK_SUCCESS: root volume unlocked.");
     }
     Ok(())

@@ -1,17 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-only
-use crate::{Result, fail, log, secure::INTERRUPTED};
+use crate::{Result, common, fail, linux, log};
 use std::{
     io::{ErrorKind, Read},
     os::fd::AsRawFd,
     path::Path,
     process::{Child, Command, Stdio},
-    sync::atomic::Ordering,
     thread,
     time::{Duration, Instant},
 };
-const OUTPUT_LIMIT: usize = 16 * 1024 * 1024;
 const LINE_LIMIT: usize = 4096;
-
 #[derive(Default)]
 pub struct Formatter {
     pin_requested: bool,
@@ -63,61 +60,20 @@ impl Drop for Running {
         }
     }
 }
-fn nonblocking(pipe: &impl AsRawFd) -> Result<()> {
-    // SAFETY: fd remains owned by the caller; fcntl only changes its status flags.
-    unsafe {
-        let flags = libc::fcntl(pipe.as_raw_fd(), libc::F_GETFL);
-        if flags < 0 || libc::fcntl(pipe.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) < 0 {
-            return Err(std::io::Error::last_os_error().into());
-        }
-    }
-    Ok(())
+pub fn run(program: &Path, args: &[&str], timeout: Duration) -> Result<()> {
+    run_inner(program, args, timeout, true)
 }
-fn drain(
-    pipe: &mut impl Read,
-    output: &mut Vec<u8>,
-    formatter: &mut Option<Formatter>,
-) -> Result<()> {
-    let mut buffer = [0u8; 4096];
-    for _ in 0..16 {
-        match pipe.read(&mut buffer) {
-            Ok(0) => return Ok(()),
-            Ok(n) => {
-                if let Some(f) = formatter {
-                    f.bytes(&buffer[..n]);
-                } else {
-                    if output.len() + n > OUTPUT_LIMIT {
-                        return Err(fail("helper output limit exceeded"));
-                    }
-                    output.extend_from_slice(&buffer[..n]);
-                }
-            }
-            Err(e) if e.kind() == ErrorKind::WouldBlock => return Ok(()),
-            Err(e) if e.kind() == ErrorKind::Interrupted => continue,
-            Err(e) => return Err(e.into()),
-        }
-    }
-    Ok(())
+pub fn cleanup(program: &Path, args: &[&str]) -> Result<()> {
+    run_inner(program, args, Duration::from_secs(10), false)
 }
-
-/// No shell, PATH lookup, PIN environment, process group change, or stdin pipe.
-/// The original systemd password agent / controlling terminal collects the PIN.
-pub fn run(program: &Path, args: &[&str], timeout: Duration, interactive: bool) -> Result<Vec<u8>> {
-    run_inner(program, args, timeout, interactive, true)
-}
-pub fn cleanup(program: &Path, args: &[&str]) -> Result<Vec<u8>> {
-    run_inner(program, args, Duration::from_secs(10), true, false)
-}
-fn run_inner(
-    program: &Path,
-    args: &[&str],
-    timeout: Duration,
-    interactive: bool,
-    cancellable: bool,
-) -> Result<Vec<u8>> {
+fn run_inner(program: &Path, args: &[&str], timeout: Duration, cancellable: bool) -> Result<()> {
     if !program.is_absolute() {
         return Err(fail("helper executable must be absolute"));
     }
+    if cancellable {
+        common::cancelled()?;
+    }
+    // Keep stdin and the foreground process group for systemd's native PIN prompt.
     let mut command = Command::new(program);
     command
         .args(args)
@@ -130,16 +86,8 @@ fn run_inner(
         .env("SYSTEMD_LOG_LOCATION", "0")
         .env("SYSTEMD_LOG_TIME", "0")
         .env("SYSTEMD_EMOJI", "0")
-        .stdin(if interactive {
-            Stdio::inherit()
-        } else {
-            Stdio::null()
-        })
-        .stdout(if interactive {
-            Stdio::inherit()
-        } else {
-            Stdio::piped()
-        })
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
         .stderr(Stdio::piped());
     if let Ok(term) = std::env::var("TERM") {
         command.env("TERM", term);
@@ -149,47 +97,59 @@ fn run_inner(
         .0
         .stderr
         .take()
-        .ok_or_else(|| fail("missing diagnostic pipe"))?;
-    nonblocking(&stderr)?;
-    let mut stdout = child.0.stdout.take();
-    if let Some(ref pipe) = stdout {
-        nonblocking(pipe)?;
+        .ok_or_else(|| fail("missing stderr"))?;
+    // SAFETY: the owned pipe remains valid for these fcntl calls.
+    unsafe {
+        let flags = linux::fcntl(stderr.as_raw_fd(), linux::F_GETFL);
+        if flags < 0
+            || linux::fcntl(
+                stderr.as_raw_fd(),
+                linux::F_SETFL,
+                flags | linux::O_NONBLOCK,
+            ) < 0
+        {
+            return Err(std::io::Error::last_os_error().into());
+        }
     }
-    let mut output = Vec::new();
-    let mut diagnostics = Vec::new();
-    let mut formatter = interactive.then(Formatter::default);
+    let mut formatter = Formatter::default();
     let deadline = Instant::now() + timeout;
     loop {
-        drain(&mut stderr, &mut diagnostics, &mut formatter)?;
-        if let Some(ref mut pipe) = stdout {
-            drain(pipe, &mut output, &mut None)?;
-        }
-        if let Some(status) = child.0.try_wait()? {
-            drain(&mut stderr, &mut diagnostics, &mut formatter)?;
-            if let Some(ref mut pipe) = stdout {
-                drain(pipe, &mut output, &mut None)?;
-            }
-            if let Some(f) = &mut formatter {
-                f.flush();
-            }
-            if status.success() {
-                return Ok(output);
-            }
-            return Err(fail(format!(
-                "{} exited with {status}",
-                program.file_name().unwrap_or_default().to_string_lossy()
-            )));
-        }
-        if cancellable && INTERRUPTED.load(Ordering::Relaxed) {
-            return Err(fail("operation interrupted"));
+        if cancellable {
+            common::cancelled()?;
         }
         if Instant::now() >= deadline {
             return Err(fail("helper deadline exceeded"));
         }
+        let mut eof = false;
+        let mut buf = [0; 4096];
+        for _ in 0..16 {
+            match stderr.read(&mut buf) {
+                Ok(0) => {
+                    eof = true;
+                    break;
+                }
+                Ok(n) => formatter.bytes(&buf[..n]),
+                Err(e) if e.kind() == ErrorKind::WouldBlock => break,
+                Err(e) if e.kind() == ErrorKind::Interrupted => (),
+                Err(e) => return Err(e.into()),
+            }
+        }
+        if cancellable {
+            common::cancelled()?;
+        }
+        if let Some(status) = child.0.try_wait()? {
+            if !status.success() {
+                formatter.flush();
+                return Err(fail(format!("helper failed: {status}")));
+            }
+            if eof {
+                formatter.flush();
+                return Ok(());
+            }
+        }
         thread::sleep(Duration::from_millis(20));
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -214,7 +174,7 @@ mod tests {
     }
     #[test]
     fn reject_relative_helper() {
-        assert!(run(Path::new("sh"), &[], Duration::from_millis(1), false).is_err());
+        assert!(run(Path::new("sh"), &[], Duration::from_millis(1)).is_err());
     }
     #[test]
     #[ignore = "subprocess fixture"]
@@ -228,7 +188,6 @@ mod tests {
             &std::env::current_exe().unwrap(),
             &["--ignored", "--exact", "process::tests::helper_waits"],
             Duration::from_millis(40),
-            false,
         );
         assert!(result.is_err());
         assert!(started.elapsed() < Duration::from_secs(1));
@@ -249,7 +208,6 @@ mod tests {
                     "process::tests::helper_reports_failure"
                 ],
                 Duration::from_secs(2),
-                false
             )
             .is_err()
         );
