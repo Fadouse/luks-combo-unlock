@@ -26,6 +26,14 @@ pub fn harden() -> Result<()> {
         if linux::setrlimit(4, &limit) != 0 || linux::prctl(4, 0, 0, 0, 0) != 0 {
             return Err(std::io::Error::last_os_error().into());
         }
+        // Native FIDO/OpenSSL allocations can contain PINs or derived secrets.
+        let memory = linux::Rlimit {
+            current: u64::MAX,
+            maximum: u64::MAX,
+        };
+        if linux::setrlimit(8, &memory) != 0 || linux::mlockall(3) != 0 {
+            return Err(fail("cannot lock process memory"));
+        }
         for sig in [1, 2, 15] {
             if linux::signal(sig, interrupted as *const () as usize) == usize::MAX {
                 return Err(std::io::Error::last_os_error().into());

@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-only
 mod common;
+mod crypto;
+mod disk;
+mod enroll;
+mod fido;
 mod linux;
+mod manifest;
 mod process;
 mod secret;
 mod unlock;
@@ -19,17 +24,32 @@ fn main() -> ExitCode {
         println!("luks-combo-unlock {}", env!("CARGO_PKG_VERSION"));
         return ExitCode::SUCCESS;
     }
-    if args.len() != 3 || !matches!(args[1].as_str(), "unlock" | "verify") {
-        eprintln!("usage: luks-combo-unlock unlock|verify CONFIG");
+    if args.len() != 3 || !matches!(args[1].as_str(), "unlock" | "verify" | "enroll") {
+        eprintln!("usage: luks-combo-unlock unlock|verify|enroll CONFIG");
         return ExitCode::from(2);
     }
     let result = (|| -> Result<()> {
         common::harden()?;
         let config = common::config(
             Path::new(&args[2]),
-            &["cryptsetup", "root_device", "state_dir", "hid_identity"],
+            &[
+                "cryptsetup",
+                "cryptsetup_cli",
+                "cryptenroll",
+                "ask_password",
+                "pcrlock",
+                "root_device",
+                "root_uuid",
+                "state_dir",
+                "hid_identity",
+                "manifest_hash",
+            ],
         )?;
-        unlock::run(&config, args[1] == "verify")
+        if args[1] == "enroll" {
+            enroll::run(&config)
+        } else {
+            unlock::run(&config, args[1] == "verify")
+        }
     })();
     match result {
         Ok(()) => ExitCode::SUCCESS,

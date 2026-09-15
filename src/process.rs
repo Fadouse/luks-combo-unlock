@@ -61,12 +61,21 @@ impl Drop for Running {
     }
 }
 pub fn run(program: &Path, args: &[&str], timeout: Duration) -> Result<()> {
-    run_inner(program, args, timeout, true)
+    run_inner(program, args, timeout, true, None)
 }
 pub fn cleanup(program: &Path, args: &[&str]) -> Result<()> {
-    run_inner(program, args, Duration::from_secs(10), false)
+    run_inner(program, args, Duration::from_secs(10), false, None)
 }
-fn run_inner(program: &Path, args: &[&str], timeout: Duration, cancellable: bool) -> Result<()> {
+pub fn keyed(program: &Path, args: &[&str], timeout: Duration, input: std::fs::File) -> Result<()> {
+    run_inner(program, args, timeout, true, Some(input))
+}
+fn run_inner(
+    program: &Path,
+    args: &[&str],
+    timeout: Duration,
+    cancellable: bool,
+    input: Option<std::fs::File>,
+) -> Result<()> {
     if !program.is_absolute() {
         return Err(fail("helper executable must be absolute"));
     }
@@ -86,7 +95,7 @@ fn run_inner(program: &Path, args: &[&str], timeout: Duration, cancellable: bool
         .env("SYSTEMD_LOG_LOCATION", "0")
         .env("SYSTEMD_LOG_TIME", "0")
         .env("SYSTEMD_EMOJI", "0")
-        .stdin(Stdio::inherit())
+        .stdin(input.map_or_else(Stdio::inherit, Stdio::from))
         .stdout(Stdio::inherit())
         .stderr(Stdio::piped());
     if let Ok(term) = std::env::var("TERM") {
@@ -217,5 +226,75 @@ mod tests {
         let mut f = Formatter::default();
         f.bytes(&vec![b'x'; LINE_LIMIT * 2]);
         assert_eq!(f.pending.len(), LINE_LIMIT);
+    }
+}
+
+// Only systemd-ask-password's bounded stdout is read into locked memory.
+pub fn pin(program: &Path) -> Result<crate::secret::Secret<64>> {
+    Ok(prompt::<64>(program, "[LUKS] Security Key PIN:")?.0)
+}
+pub fn prompt<const N: usize>(
+    program: &Path,
+    message: &str,
+) -> Result<(crate::secret::Secret<N>, usize)> {
+    common::cancelled()?;
+    let mut child = Running(
+        Command::new(program)
+            .args(["--timeout=90s", "--echo=masked", message])
+            .env_clear()
+            .env("LANG", "C.UTF-8")
+            .env("TERM", "linux")
+            .stdin(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .stdout(Stdio::piped())
+            .spawn()?,
+    );
+    let mut pipe = child
+        .0
+        .stdout
+        .take()
+        .ok_or_else(|| fail("missing PIN pipe"))?;
+    unsafe {
+        let flags = linux::fcntl(pipe.as_raw_fd(), linux::F_GETFL);
+        if flags < 0
+            || linux::fcntl(pipe.as_raw_fd(), linux::F_SETFL, flags | linux::O_NONBLOCK) < 0
+        {
+            return Err(std::io::Error::last_os_error().into());
+        }
+    }
+    let mut pin = crate::secret::Secret::<N>::new()?;
+    let mut used = 0;
+    let mut ended = false;
+    let deadline = Instant::now() + Duration::from_secs(95);
+    loop {
+        common::cancelled()?;
+        if Instant::now() >= deadline {
+            return Err(fail("PIN prompt timed out"));
+        }
+        if !ended {
+            match pipe.read(&mut pin[used..used + 1]) {
+                Ok(0) => return Err(fail("PIN prompt closed")),
+                Ok(_) if pin[used] == b'\n' => {
+                    pin[used] = 0;
+                    ended = true;
+                }
+                Ok(_) if used == N - 1 || pin[used] == 0 => {
+                    return Err(fail("invalid PIN length or encoding"));
+                }
+                Ok(_) => used += 1,
+                Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted) => (),
+                Err(e) => return Err(e.into()),
+            }
+        }
+        if ended {
+            if let Some(status) = child.0.try_wait()? {
+                if !status.success() || used == 0 {
+                    return Err(fail("PIN prompt failed"));
+                }
+                std::str::from_utf8(&pin[..used]).map_err(|_| fail("PIN is not UTF-8"))?;
+                return Ok((pin, used));
+            }
+        }
+        thread::sleep(Duration::from_millis(10));
     }
 }

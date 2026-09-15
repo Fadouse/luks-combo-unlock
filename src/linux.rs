@@ -20,6 +20,17 @@ pub struct Rlimit {
     pub maximum: u64,
 }
 unsafe extern "C" {
+    pub fn mmap(
+        addr: *mut c_void,
+        length: usize,
+        prot: c_int,
+        flags: c_int,
+        fd: c_int,
+        offset: i64,
+    ) -> *mut c_void;
+    pub fn munmap(addr: *mut c_void, length: usize) -> c_int;
+    pub fn madvise(addr: *mut c_void, length: usize, advice: c_int) -> c_int;
+    pub fn mlockall(flags: c_int) -> c_int;
     pub fn geteuid() -> u32;
     pub fn umask(mask: u32) -> u32;
     pub fn setrlimit(resource: c_int, limits: *const Rlimit) -> c_int;

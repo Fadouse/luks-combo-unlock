@@ -7,10 +7,60 @@ use crate::{
 use std::{
     ffi::CString,
     fs::{self, File, OpenOptions},
-    io::{Read, Write},
+    io::{Seek, Write},
+    ops::{Deref, DerefMut},
     os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
+    ptr::NonNull,
 };
+
+pub struct Secret<const N: usize>(NonNull<u8>);
+impl<const N: usize> Secret<N> {
+    pub fn new() -> Result<Self> {
+        if N == 0 || N > 4096 {
+            return Err(crate::fail("invalid secret allocation"));
+        }
+        // SAFETY: an anonymous page is exclusively owned until Drop. Separate pages
+        // avoid overlapping mlock ranges that could be unlocked by another buffer.
+        unsafe {
+            let p = linux::mmap(std::ptr::null_mut(), 4096, 3, 0x22, -1, 0);
+            if p as isize == -1 {
+                return Err(std::io::Error::last_os_error().into());
+            }
+            if linux::mlock(p, 4096) != 0 || linux::madvise(p, 4096, 16) != 0 {
+                let error = std::io::Error::last_os_error();
+                linux::munmap(p, 4096);
+                return Err(error.into());
+            }
+            Ok(Self(
+                NonNull::new(p.cast()).ok_or_else(|| crate::fail("null mapping"))?,
+            ))
+        }
+    }
+}
+impl<const N: usize> Deref for Secret<N> {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        unsafe { std::slice::from_raw_parts(self.0.as_ptr(), N) }
+    }
+}
+impl<const N: usize> DerefMut for Secret<N> {
+    fn deref_mut(&mut self) -> &mut [u8] {
+        unsafe { std::slice::from_raw_parts_mut(self.0.as_ptr(), N) }
+    }
+}
+impl<const N: usize> Drop for Secret<N> {
+    fn drop(&mut self) {
+        // SAFETY: the whole mapping belongs to this instance; volatile writes precede unmapping.
+        unsafe {
+            for i in 0..4096 {
+                self.0.as_ptr().add(i).write_volatile(0);
+            }
+            linux::munmap(self.0.as_ptr().cast(), 4096);
+        }
+    }
+}
+
 pub struct RamSecret {
     pub directory: PathBuf,
     mounted: bool,
@@ -24,8 +74,8 @@ impl RamSecret {
             mounted: false,
         };
         let target = CString::new(result.directory.as_os_str().as_encoded_bytes())?;
-        // SAFETY: all C strings remain alive during mount; flags disallow execution and device nodes.
-        let status = unsafe {
+        // SAFETY: C strings live through mount; flags deny execution and device nodes.
+        if unsafe {
             linux::mount(
                 c"ramfs".as_ptr(),
                 target.as_ptr(),
@@ -33,33 +83,31 @@ impl RamSecret {
                 linux::MS_NOSUID | linux::MS_NODEV | linux::MS_NOEXEC,
                 c"mode=0700".as_ptr().cast(),
             )
-        };
-        if status != 0 {
+        } != 0
+        {
             return Err(std::io::Error::last_os_error().into());
         }
         result.mounted = true;
         Ok(result)
     }
-    pub fn load(&self, source: &Path) -> Result<PathBuf> {
-        let mut secret = LockedSecret::new()?;
-        File::open(source)?.read_exact(secret.bytes.as_mut_slice())?;
-        let path = self.directory.join("salt");
-        let mut f = OpenOptions::new()
+    pub fn file(&self, bytes: &[u8]) -> Result<File> {
+        let path = self.directory.join("key");
+        let mut file = OpenOptions::new()
+            .read(true)
             .write(true)
             .create_new(true)
-            .mode(0o400)
+            .mode(0o600)
+            .custom_flags(linux::O_NOFOLLOW | linux::O_CLOEXEC)
             .open(&path)?;
-        f.write_all(secret.bytes.as_slice())?;
-        Ok(path)
+        fs::remove_file(path)?;
+        file.write_all(bytes)?;
+        file.rewind()?;
+        Ok(file)
     }
     pub fn cleanup(&mut self) -> Result<()> {
-        let salt = self.directory.join("salt");
-        if salt.exists() {
-            fs::remove_file(salt)?;
-        }
         if self.mounted {
             let path = CString::new(self.directory.as_os_str().as_encoded_bytes())?;
-            // SAFETY: path is a valid C string for this instance's private mount.
+            // SAFETY: only this instance's mount is detached.
             if unsafe { linux::umount2(path.as_ptr(), 0) } != 0 {
                 return Err(std::io::Error::last_os_error().into());
             }
@@ -75,30 +123,6 @@ impl Drop for RamSecret {
     fn drop(&mut self) {
         if let Err(e) = self.cleanup() {
             crate::log("ERROR", &format!("secret cleanup: {e}"));
-        }
-    }
-}
-struct LockedSecret {
-    bytes: Box<[u8; 32]>,
-}
-impl LockedSecret {
-    fn new() -> Result<Self> {
-        let bytes = Box::new([0u8; 32]);
-        // SAFETY: the Box has a stable address and remains allocated until munlock in Drop.
-        if unsafe { linux::mlock(bytes.as_ptr().cast(), bytes.len()) } != 0 {
-            return Err(std::io::Error::last_os_error().into());
-        }
-        Ok(Self { bytes })
-    }
-}
-impl Drop for LockedSecret {
-    fn drop(&mut self) {
-        // SAFETY: each pointer addresses an initialized byte in our exclusive allocation.
-        unsafe {
-            for byte in self.bytes.iter_mut() {
-                std::ptr::write_volatile(byte, 0);
-            }
-            linux::munlock(self.bytes.as_ptr().cast(), self.bytes.len());
         }
     }
 }

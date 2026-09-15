@@ -12,21 +12,11 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-const CAPSULE_MAP: &str = "fde-combo-salt";
+pub const CAPSULE_MAP: &str = "fde-combo-v2";
 const VERIFY_MAP: &str = "cryptroot-combo-check";
 const MARKER: &str = "/run/luks-combo-unlock/unlocked";
 
-pub fn valid_cid(cid: &str) -> bool {
-    !cid.is_empty()
-        && cid.len() <= 4096
-        && cid.len() % 4 == 0
-        && cid
-            .trim_end_matches('=')
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'+' || b == b'/')
-        && cid.len() - cid.trim_end_matches('=').len() <= 2
-}
-fn device(config: &Config) -> Result<PathBuf> {
+pub fn device(config: &Config) -> Result<PathBuf> {
     let identity = &config["hid_identity"];
     let deadline = Instant::now() + Duration::from_secs(30);
     log("USB", "Waiting up to 30 seconds for your Security Key.");
@@ -151,17 +141,17 @@ pub fn run(config: &Config, verify: bool) -> Result<()> {
             return Err(fail("refusing preexisting mapping"));
         }
     }
-    let slot = String::from_utf8(secure::read_trusted(&state.join("keyslot"), 32)?)?;
-    if slot.trim() != "1" {
-        return Err(fail("combination must use the configured root slot 1"));
+    let data = secure::read_trusted(&state.join("manifest.bin"), 2048)?;
+    if crate::crypto::hex(&crate::crypto::hash(&data)) != config["manifest_hash"] {
+        return Err(fail("manifest does not match the measured configuration"));
     }
-    let cid = String::from_utf8(secure::read_trusted(&state.join("credential-id"), 4096)?)?;
-    if !valid_cid(cid.trim()) {
-        return Err(fail("invalid credential ID"));
+    let manifest = crate::manifest::Manifest::decode(&data)?;
+    if manifest.uuid != config["root_uuid"] {
+        return Err(fail("configured root UUID mismatch"));
     }
+    crate::disk::check(root, &manifest.uuid, false)?;
     let key = device(config).map_err(|e| fail(format!("stage=wait-for-security-key: {e}")))?;
-    let capsule = state.join("salt.luks");
-    // Verify capsule ownership/mode without copying its encrypted contents into memory.
+    let capsule = state.join("tpm.luks");
     secure::trusted_parent(&capsule)?;
     let m = fs::symlink_metadata(&capsule)?;
     use std::os::unix::fs::MetadataExt;
@@ -191,13 +181,19 @@ pub fn run(config: &Config, verify: bool) -> Result<()> {
         Duration::from_secs(25),
     ).map_err(|e| fail(format!("stage=tpm-policy: {e}")))?;
     resources.secret = Some(secret::RamSecret::new()?);
-    let salt = resources
-        .secret
-        .as_ref()
-        .unwrap()
-        .load(Path::new("/dev/mapper/fde-combo-salt"))?;
+    let device = crate::fido::Device::open(&key)?;
+    let pin = process::pin(path_field(config, "ask_password")?)?;
+    let f = device.derive(&manifest, &pin)?;
+    drop(pin);
+    drop(device);
+    let mut t = secret::Secret::<32>::new()?;
+    use std::io::Read;
+    std::fs::File::open("/dev/mapper/fde-combo-v2")?.read_exact(&mut t[..])?;
     resources.detach(CAPSULE_MAP)?;
     resources.capsule_owned = false;
+    let final_key = crate::crypto::derive(&t[..], &f[..], &manifest.encode())?;
+    drop(t);
+    drop(f);
     let data_path = if verify {
         let scratch = secure::unique(Path::new("/run"), "luks-check-")?;
         let file = OpenOptions::new()
@@ -216,14 +212,11 @@ pub fn run(config: &Config, verify: bool) -> Result<()> {
     } else {
         "luks,discard".into()
     };
-    options.push_str(&format!(",fido2-device={},fido2-pin=yes,fido2-up=yes,fido2-cid={},key-slot=1,tries=1,password-cache=no,timeout={}",
-        key.display(), cid.trim(), if verify { "10min" } else { "90s" }));
-    log(
-        "AUTH",
-        "Enter the Security Key PIN when prompted, then touch the key when it flashes.",
-    );
+    options.push_str(",key-slot=2,headless=yes,tries=1,password-cache=no");
     resources.verify_owned = verify;
-    process::run(
+    let input = resources.secret.as_ref().unwrap().file(&final_key[..])?;
+    drop(final_key);
+    process::keyed(
         cryptsetup,
         &[
             "attach",
@@ -231,11 +224,13 @@ pub fn run(config: &Config, verify: bool) -> Result<()> {
             data_path
                 .to_str()
                 .ok_or_else(|| fail("invalid data path"))?,
-            salt.to_str().ok_or_else(|| fail("invalid salt path"))?,
+            "/proc/self/fd/0",
             &options,
         ],
-        Duration::from_secs(if verify { 610 } else { 100 }),
+        Duration::from_secs(30),
+        input,
     )?;
+    secure::cancelled()?;
     resources.cleanup()?;
     if verify {
         log(
@@ -243,22 +238,9 @@ pub fn run(config: &Config, verify: bool) -> Result<()> {
             "COMBO_VERIFY_SUCCESS: TPM + Security Key PIN + touch verified.",
         );
     } else {
-        let marker = format!("LUKS-COMBO-1\n{}\n{}\n1\n", secure::boot_id()?, root);
+        let marker = format!("LUKS-COMBO-2\n{}\n{}\n2\n", secure::boot_id()?, root);
         secure::atomic_write(Path::new(MARKER), marker.as_bytes())?;
         log("DONE", "COMBO_UNLOCK_SUCCESS: root volume unlocked.");
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn credential_input_is_bounded_and_not_an_option_string() {
-        for bad in ["", "AAAA,discard", "AA=A", "====", "AA\nA", "A"] {
-            assert!(!valid_cid(bad), "{bad}");
-        }
-        assert!(valid_cid("AQIDBA=="));
-        assert!(!valid_cid(&"A".repeat(4100)));
-    }
 }

@@ -1,9 +1,10 @@
-{ lib, rustPlatform }:
+{ lib, rustPlatform, libfido2, openssl, cryptsetup }:
 rustPlatform.buildRustPackage {
   pname = "luks-combo-unlock";
-  version = "0.1.0";
+  version = "0.2.0";
   src = lib.cleanSource ./.;
   cargoLock.lockFile = ./Cargo.lock;
+  buildInputs = [ libfido2 openssl cryptsetup ];
   doCheck = true;
   meta = {
     license = lib.licenses.gpl3Only;
