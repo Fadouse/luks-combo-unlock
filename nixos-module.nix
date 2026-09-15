@@ -55,6 +55,7 @@ in {
         LimitMEMLOCK = "infinity";
         NoNewPrivileges = true;
         PrivateMounts = true;
+        LoadCredential = "pcrlock.nixos:/run/credentials/@encrypted/pcrlock.nixos";
       };
     };
   };

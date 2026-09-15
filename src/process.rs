@@ -98,6 +98,14 @@ fn run_inner(
         .stdin(input.map_or_else(Stdio::inherit, Stdio::from))
         .stdout(Stdio::inherit())
         .stderr(Stdio::piped());
+    // systemd hides global credentials in a service's mount namespace. Forward
+    // only its explicitly loaded PCR credential directory to the native helper.
+    if let Some(directory) = std::env::var_os("CREDENTIALS_DIRECTORY") {
+        if !Path::new(&directory).is_absolute() {
+            return Err(fail("credential directory must be absolute"));
+        }
+        command.env("SYSTEMD_ENCRYPTED_SYSTEM_CREDENTIALS_DIRECTORY", directory);
+    }
     if let Ok(term) = std::env::var("TERM") {
         command.env("TERM", term);
     }
@@ -220,6 +228,39 @@ mod tests {
             )
             .is_err()
         );
+    }
+    #[test]
+    fn credential_directory_reaches_helper() {
+        let result = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--ignored",
+                "--exact",
+                "process::tests::forward_credentials",
+            ])
+            .env("CREDENTIALS_DIRECTORY", "/run/credentials/test.service")
+            .env("SYSTEMD_ENCRYPTED_SYSTEM_CREDENTIALS_DIRECTORY", "/wrong")
+            .output()
+            .unwrap();
+        assert!(result.status.success(), "{:?}", result);
+    }
+    #[test]
+    #[ignore = "subprocess fixture"]
+    fn forward_credentials() {
+        run(
+            &std::env::current_exe().unwrap(),
+            &["--ignored", "--exact", "process::tests::check_credentials"],
+            Duration::from_secs(2),
+        )
+        .unwrap();
+    }
+    #[test]
+    #[ignore = "subprocess fixture"]
+    fn check_credentials() {
+        assert_eq!(
+            std::env::var("SYSTEMD_ENCRYPTED_SYSTEM_CREDENTIALS_DIRECTORY").unwrap(),
+            "/run/credentials/test.service"
+        );
+        assert!(std::env::var_os("CREDENTIALS_DIRECTORY").is_none());
     }
     #[test]
     fn bounded_formatter() {

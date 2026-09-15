@@ -1,7 +1,7 @@
 { lib, rustPlatform, libfido2, openssl, cryptsetup, python3 }:
 rustPlatform.buildRustPackage {
   pname = "luks-combo-unlock";
-  version = "0.2.1";
+  version = "0.2.2";
   src = lib.cleanSource ./.;
   cargoLock.lockFile = ./Cargo.lock;
   buildInputs = [ libfido2 openssl cryptsetup ];

@@ -13,6 +13,6 @@ luks-combo-unlock unlock CONFIG
 
 CONFIG contains `key=value` lines: `cryptsetup` (systemd-cryptsetup), `cryptsetup_cli`, `cryptenroll`, `ask_password`, `pcrlock`, `root_device`, `root_uuid`, `state_dir`, `hid_identity`, `manifest_hash`. Enrollment requires `manifest_hash=enroll`; unlock and verification require the printed digest.
 
-NixOS: import `nixosModules.default`; configure `boot.initrd.luksComboUnlock.{enable,rootDevice,rootUuid,manifestHash}`. State is loaded from `/var/lib/fde-combo-v2`.
+NixOS: import `nixosModules.default`; configure `boot.initrd.luksComboUnlock.{enable,rootDevice,rootUuid,manifestHash}`. State is loaded from `/var/lib/fde-combo-v2`. The service loads the boot credential `pcrlock.nixos` for TPM policy lookup inside its private mount namespace.
 
 Linux x86-64. No external Rust crates. Uses Nix-pinned libfido2, OpenSSL and cryptsetup. GPL-3.0-only.
