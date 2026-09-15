@@ -1,0 +1,18 @@
+[package]
+name = "luks-session-guard"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+authors = ["Fadouse <fadouse@pm.me>"]
+license = "GPL-3.0-only"
+description = "Linux LUKS combination unlock and fail-closed desktop autologin orchestration"
+repository = "https://github.com/Fadouse/luks-session-guard"
+
+[dependencies]
+libc = "=0.2.189"
+serde_json = "=1.0.151"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
