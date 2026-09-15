@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 use crate::{Result, crypto, fail};
-const MAGIC: &[u8; 8] = b"LCUV2\0\0\0";
+const MAGIC: &[u8; 8] = b"LCUMAN\0\0";
 pub struct Manifest {
     pub uuid: String,
     pub salt: [u8; 32],
@@ -19,7 +19,7 @@ impl Manifest {
     }
     pub fn decode(bytes: &[u8]) -> Result<Self> {
         if bytes.len() < 143 || &bytes[..8] != MAGIC {
-            return Err(fail("invalid v2 manifest"));
+            return Err(fail("invalid manifest"));
         }
         let len = u16::from_be_bytes(bytes[140..142].try_into()?) as usize;
         if len == 0 || len > 1024 || bytes.len() != 142 + len {
@@ -38,7 +38,7 @@ impl Manifest {
         crypto::hex(&crypto::hash(&self.encode()))
     }
     pub fn challenge(&self) -> Result<[u8; 32]> {
-        let mut data = b"luks-combo-unlock/v2/assertion\0".to_vec();
+        let mut data = b"luks-combo-unlock/assertion\0".to_vec();
         data.extend_from_slice(&crypto::hash(&self.encode()));
         let mut nonce = [0; 32];
         crypto::random(&mut nonce)?;

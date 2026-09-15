@@ -46,7 +46,7 @@ pub fn run(c: &Config) -> Result<()> {
     let uuid = &c["root_uuid"];
     crate::manifest::validate_uuid(uuid)?;
     disk::check(&c["root_device"], uuid, true)?;
-    if Path::new("/dev/mapper/fde-combo-v2").try_exists()? {
+    if Path::new("/dev/mapper/fde-combo").try_exists()? {
         return Err(fail("capsule mapping already exists"));
     }
     let device = fido::Device::open(&unlock::device(c)?)?;
@@ -110,7 +110,7 @@ pub fn run(c: &Config) -> Result<()> {
     )?;
     let mut target = OpenOptions::new()
         .write(true)
-        .open("/dev/mapper/fde-combo-v2")?;
+        .open("/dev/mapper/fde-combo")?;
     target.write_all(&t[..])?;
     target.sync_all()?;
     drop(target);
@@ -147,7 +147,7 @@ pub fn run(c: &Config) -> Result<()> {
     )?;
     let mut verified_t = Secret::<32>::new()?;
     use std::io::Read;
-    fs::File::open("/dev/mapper/fde-combo-v2")?.read_exact(&mut verified_t[..])?;
+    fs::File::open("/dev/mapper/fde-combo")?.read_exact(&mut verified_t[..])?;
     if crypto::hash(&verified_t[..]) != t_hash {
         return Err(crate::fail("TPM capsule verification failed"));
     }
@@ -156,7 +156,7 @@ pub fn run(c: &Config) -> Result<()> {
     common::atomic_write(&state.join("manifest.bin"), &manifest.encode())?;
     log(
         "RECOVERY",
-        "Enter an existing LUKS recovery key to authorize adding slot 2.",
+        "Enter an existing LUKS recovery key to authorize adding slot 4.",
     );
     let (recovery, length) = process::prompt::<1024>(
         path_field(c, "ask_password")?,
@@ -169,11 +169,11 @@ pub fn run(c: &Config) -> Result<()> {
     disk::check(&c["root_device"], uuid, false)?;
     log(
         "ENROLL",
-        &format!("V2_ENROLLED: manifest_sha256={}", manifest.digest()),
+        &format!("COMBO_ENROLLED: manifest_sha256={}", manifest.digest()),
     );
     log(
         "ENROLL",
-        "Existing root keyslots remain unchanged; verify v2 before deploying.",
+        "Existing root keyslots remain unchanged; verify the new enrollment before deploying.",
     );
     fs::File::open(state)?.sync_all()?;
     Ok(())

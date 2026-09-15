@@ -38,13 +38,13 @@ pub fn check(device: &str, uuid: &str, enrolling: bool) -> Result<()> {
         if id.is_null() || CStr::from_ptr(id).to_bytes() != uuid.as_bytes() {
             return Err(fail("LUKS UUID mismatch"));
         }
-        let state = crypt_keyslot_status(d.0, 2);
+        let state = crypt_keyslot_status(d.0, 4);
         if if enrolling {
             state != 1
         } else {
             ![2, 3].contains(&state)
         } {
-            return Err(fail("unexpected v2 keyslot state"));
+            return Err(fail("unexpected combination keyslot state"));
         }
     }
     Ok(())
@@ -63,7 +63,7 @@ pub fn add(device: &str, uuid: &str, existing: &[u8], key: &[u8]) -> Result<()> 
         } else {
             crypt_keyslot_add_by_passphrase(
                 cd,
-                2,
+                4,
                 existing.as_ptr().cast(),
                 existing.len(),
                 key.as_ptr().cast(),
@@ -71,9 +71,9 @@ pub fn add(device: &str, uuid: &str, existing: &[u8], key: &[u8]) -> Result<()> 
             )
         };
         crypt_free(cd);
-        if result != 2 {
+        if result != 4 {
             return Err(fail(
-                "adding root slot 2 failed; existing slots were not requested for removal",
+                "adding root slot 4 failed; existing slots were not requested for removal",
             ));
         }
     }

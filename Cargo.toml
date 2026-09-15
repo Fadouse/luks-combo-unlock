@@ -1,6 +1,6 @@
 [package]
 name = "luks-combo-unlock"
-version = "0.2.2"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.95"
 authors = ["Fadouse <fadouse@pm.me>"]

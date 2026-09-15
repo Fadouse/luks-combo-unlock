@@ -11,7 +11,7 @@ let
     cryptenroll=${config.boot.initrd.systemd.package}/bin/systemd-cryptenroll
     ask_password=${config.boot.initrd.systemd.package}/bin/systemd-ask-password
     pcrlock=/var/lib/systemd/pcrlock.json
-    state_dir=/etc/fde-combo-v2
+    state_dir=/etc/fde-combo
     hid_identity=HID_ID=0003:00001050:00000402
   '';
 in {
@@ -24,8 +24,8 @@ in {
   config = lib.mkIf cfg.enable {
     assertions = [{ assertion = config.boot.initrd.systemd.enable; message = "luksComboUnlock requires systemd initrd."; }];
     boot.initrd.secrets = {
-      "/etc/fde-combo-v2/tpm.luks" = "/var/lib/fde-combo-v2/tpm.luks";
-      "/etc/fde-combo-v2/manifest.bin" = "/var/lib/fde-combo-v2/manifest.bin";
+      "/etc/fde-combo/tpm.luks" = "/var/lib/fde-combo/tpm.luks";
+      "/etc/fde-combo/manifest.bin" = "/var/lib/fde-combo/manifest.bin";
     };
     boot.initrd.availableKernelModules = [ "loop" "usbhid" "hid_generic" ];
     boot.initrd.kernelModules = [ "loop" ];

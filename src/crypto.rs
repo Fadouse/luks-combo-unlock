@@ -45,7 +45,7 @@ pub fn derive(t: &[u8], f: &[u8], context: &[u8]) -> Result<Secret<32>> {
     let mut ikm = Secret::<64>::new()?;
     ikm[..32].copy_from_slice(t);
     ikm[32..].copy_from_slice(f);
-    hkdf(&ikm[..], &hash(context), b"luks-combo-unlock/v2")
+    hkdf(&ikm[..], &hash(context), b"luks-combo-unlock")
 }
 fn hkdf<const N: usize>(ikm: &[u8], salt: &[u8], info: &[u8]) -> Result<Secret<N>> {
     struct Context(*mut c_void);

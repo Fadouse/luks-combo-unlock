@@ -12,7 +12,7 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-pub const CAPSULE_MAP: &str = "fde-combo-v2";
+pub const CAPSULE_MAP: &str = "fde-combo";
 const VERIFY_MAP: &str = "cryptroot-combo-check";
 const MARKER: &str = "/run/luks-combo-unlock/unlocked";
 
@@ -188,7 +188,7 @@ pub fn run(config: &Config, verify: bool) -> Result<()> {
     drop(device);
     let mut t = secret::Secret::<32>::new()?;
     use std::io::Read;
-    std::fs::File::open("/dev/mapper/fde-combo-v2")?.read_exact(&mut t[..])?;
+    std::fs::File::open("/dev/mapper/fde-combo")?.read_exact(&mut t[..])?;
     resources.detach(CAPSULE_MAP)?;
     resources.capsule_owned = false;
     let final_key = crate::crypto::derive(&t[..], &f[..], &manifest.encode())?;
@@ -212,7 +212,7 @@ pub fn run(config: &Config, verify: bool) -> Result<()> {
     } else {
         "luks,discard".into()
     };
-    options.push_str(",key-slot=2,headless=yes,tries=1,password-cache=no");
+    options.push_str(",key-slot=4,headless=yes,tries=1,password-cache=no");
     resources.verify_owned = verify;
     let input = resources.secret.as_ref().unwrap().file(&final_key[..])?;
     drop(final_key);
@@ -238,7 +238,7 @@ pub fn run(config: &Config, verify: bool) -> Result<()> {
             "COMBO_VERIFY_SUCCESS: TPM + Security Key PIN + touch verified.",
         );
     } else {
-        let marker = format!("LUKS-COMBO-2\n{}\n{}\n2\n", secure::boot_id()?, root);
+        let marker = format!("LUKS-COMBO\n{}\n{}\n4\n", secure::boot_id()?, root);
         secure::atomic_write(Path::new(MARKER), marker.as_bytes())?;
         log("DONE", "COMBO_UNLOCK_SUCCESS: root volume unlocked.");
     }
